@@ -1,0 +1,48 @@
+# Local agent context (intentionally not published)
+AGENTS.md
+
+# Personal source-of-truth databases
+data/core/*
+!data/core/.gitkeep
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Private/raw/generated datasets
+data/raw/*
+!data/raw/.gitkeep
+data/staging/*
+!data/staging/.gitkeep
+data/supplemental/*
+!data/supplemental/.gitkeep
+data/exports/*
+!data/exports/.gitkeep
+
+# Documents and logs that may contain personal data
+*.pdf
+*.docx
+*.xlsx
+logs/
+*.log
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editor/OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
