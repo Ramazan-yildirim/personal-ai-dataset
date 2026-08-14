@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 from src.database.connection import get_connection
+from src.database.persons import PersonNotFoundError as PersonServiceNotFoundError
 
 
 ALLOWED_VISIBILITIES = {"public", "private", "internal"}
@@ -21,8 +22,16 @@ class FactValidationError(FactError, ValueError):
     """Raised when fact input is invalid."""
 
 
-class PersonNotFoundError(FactError):
+class PersonNotFoundError(FactError, PersonServiceNotFoundError):
     """Raised when a fact references a person that does not exist."""
+
+
+class FactNotFoundError(FactError):
+    """Raised when a requested fact does not exist."""
+
+
+class FactStateError(FactError):
+    """Raised when an operation is invalid for the fact's current state."""
 
 
 class DuplicateFactError(FactError):
@@ -61,6 +70,11 @@ def _optional_date(value: str | date | None, field_name: str) -> str | None:
 def _validate_person_id(person_id: int) -> None:
     if isinstance(person_id, bool) or not isinstance(person_id, int) or person_id <= 0:
         raise FactValidationError("person_id pozitif bir tam sayı olmalıdır.")
+
+
+def _validate_fact_id(fact_id: int) -> None:
+    if isinstance(fact_id, bool) or not isinstance(fact_id, int) or fact_id <= 0:
+        raise FactValidationError("fact_id pozitif bir tam sayı olmalıdır.")
 
 
 def _connection_or_default(
@@ -127,6 +141,16 @@ def _ensure_person_exists(connection: sqlite3.Connection, person_id: int) -> Non
     ).fetchone()
     if person is None:
         raise PersonNotFoundError(f"person_id={person_id} için kişi bulunamadı.")
+
+
+def _get_fact_row(connection: sqlite3.Connection, fact_id: int) -> sqlite3.Row:
+    fact = connection.execute(
+        "SELECT * FROM facts WHERE id = ?",
+        (fact_id,),
+    ).fetchone()
+    if fact is None:
+        raise FactNotFoundError(f"fact_id={fact_id} için fact bulunamadı.")
+    return fact
 
 
 def _find_duplicate(
@@ -314,6 +338,57 @@ def add_fact(
             active_connection.close()
 
 
+def get_current_facts(
+    person_id: int,
+    category: str,
+    key: str,
+    *,
+    as_of: str | date | None = None,
+    visibility: str | None = None,
+    connection: sqlite3.Connection | None = None,
+) -> list[dict[str, Any]]:
+    """Return all active facts valid on as_of (today by default)."""
+
+    _validate_person_id(person_id)
+    normalized_category = _required_text(category, "category")
+    normalized_key = _required_text(key, "key")
+    normalized_as_of = _optional_date(as_of, "as_of") or date.today().isoformat()
+    if visibility is not None and visibility not in ALLOWED_VISIBILITIES:
+        allowed = ", ".join(sorted(ALLOWED_VISIBILITIES))
+        raise FactValidationError(f"visibility şu değerlerden biri olmalıdır: {allowed}.")
+
+    active_connection, owns_connection = _connection_or_default(connection)
+    try:
+        _ensure_person_exists(active_connection, person_id)
+        query = """
+            SELECT *
+            FROM facts
+            WHERE person_id = ?
+              AND category = ?
+              AND key = ?
+              AND status = 'active'
+              AND (valid_from IS NULL OR valid_from <= ?)
+              AND (valid_to IS NULL OR valid_to >= ?)
+        """
+        parameters: list[Any] = [
+            person_id,
+            normalized_category,
+            normalized_key,
+            normalized_as_of,
+            normalized_as_of,
+        ]
+        if visibility is not None:
+            query += " AND visibility = ?"
+            parameters.append(visibility)
+        query += " ORDER BY COALESCE(valid_from, '') DESC, created_at DESC, id DESC"
+
+        rows = active_connection.execute(query, parameters).fetchall()
+        return [_row_to_dict(row) for row in rows]
+    finally:
+        if owns_connection:
+            active_connection.close()
+
+
 def get_current_fact(
     person_id: int,
     category: str,
@@ -324,47 +399,21 @@ def get_current_fact(
 ) -> dict[str, Any] | None:
     """Return the single active fact valid on as_of (today by default)."""
 
-    _validate_person_id(person_id)
-    normalized_category = _required_text(category, "category")
-    normalized_key = _required_text(key, "key")
-    normalized_as_of = _optional_date(as_of, "as_of") or date.today().isoformat()
-
-    active_connection, owns_connection = _connection_or_default(connection)
-    try:
-        _ensure_person_exists(active_connection, person_id)
-        rows = active_connection.execute(
-            """
-            SELECT *
-            FROM facts
-            WHERE person_id = ?
-              AND category = ?
-              AND key = ?
-              AND status = 'active'
-              AND (valid_from IS NULL OR valid_from <= ?)
-              AND (valid_to IS NULL OR valid_to >= ?)
-            ORDER BY COALESCE(valid_from, '') DESC, created_at DESC, id DESC
-            LIMIT 2
-            """,
-            (
-                person_id,
-                normalized_category,
-                normalized_key,
-                normalized_as_of,
-                normalized_as_of,
-            ),
-        ).fetchall()
-
-        if not rows:
-            return None
-        if len(rows) > 1:
-            raise AmbiguousFactError(
-                "Tekil sorgu birden fazla geçerli fact buldu. "
-                "Bu key çok değerliyse çoğul sorgu desteği eklenmelidir."
-            )
-        return _row_to_dict(rows[0])
-    finally:
-        if owns_connection:
-            active_connection.close()
+    facts = get_current_facts(
+        person_id,
+        category,
+        key,
+        as_of=as_of,
+        connection=connection,
+    )
+    if not facts:
+        return None
+    if len(facts) > 1:
+        raise AmbiguousFactError(
+            "Tekil sorgu birden fazla geçerli fact buldu. "
+            "Çok değerli key için get_current_facts() kullanın."
+        )
+    return facts[0]
 
 
 def get_fact_history(
@@ -399,6 +448,222 @@ def get_fact_history(
             (person_id, normalized_category, normalized_key),
         ).fetchall()
         return [_row_to_dict(row) for row in rows]
+    finally:
+        if owns_connection:
+            active_connection.close()
+
+
+def get_fact(
+    fact_id: int,
+    *,
+    connection: sqlite3.Connection | None = None,
+) -> dict[str, Any]:
+    """Return a fact by id, regardless of status."""
+
+    _validate_fact_id(fact_id)
+    active_connection, owns_connection = _connection_or_default(connection)
+    try:
+        return _row_to_dict(_get_fact_row(active_connection, fact_id))
+    finally:
+        if owns_connection:
+            active_connection.close()
+
+
+def close_fact(
+    fact_id: int,
+    valid_to: str | date,
+    *,
+    connection: sqlite3.Connection | None = None,
+) -> dict[str, Any]:
+    """Close or shorten an active fact's inclusive validity period."""
+
+    _validate_fact_id(fact_id)
+    normalized_to = _optional_date(valid_to, "valid_to")
+    if normalized_to is None:
+        raise FactValidationError("valid_to zorunludur.")
+
+    active_connection, owns_connection = _connection_or_default(connection)
+    try:
+        fact = _get_fact_row(active_connection, fact_id)
+        if fact["status"] != "active":
+            raise FactStateError("Yalnızca active bir fact'in dönemi kapatılabilir.")
+        if fact["valid_from"] and normalized_to < fact["valid_from"]:
+            raise FactValidationError("valid_to, fact'in valid_from tarihinden önce olamaz.")
+        if fact["valid_to"] and normalized_to > fact["valid_to"]:
+            raise FactValidationError(
+                "close_fact mevcut dönemi uzatamaz; yalnızca kapatabilir veya kısaltabilir."
+            )
+
+        if fact["valid_to"] != normalized_to:
+            active_connection.execute(
+                """
+                UPDATE facts
+                SET valid_to = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (normalized_to, fact_id),
+            )
+            if owns_connection:
+                active_connection.commit()
+
+        return _row_to_dict(_get_fact_row(active_connection, fact_id))
+    except Exception:
+        if owns_connection:
+            active_connection.rollback()
+        raise
+    finally:
+        if owns_connection:
+            active_connection.close()
+
+
+def _set_fact_status(
+    fact_id: int,
+    target_status: str,
+    *,
+    connection: sqlite3.Connection | None = None,
+) -> dict[str, Any]:
+    _validate_fact_id(fact_id)
+    active_connection, owns_connection = _connection_or_default(connection)
+    try:
+        fact = _get_fact_row(active_connection, fact_id)
+        if fact["status"] == target_status:
+            return _row_to_dict(fact)
+        if fact["status"] == "deleted":
+            raise FactStateError("Deleted bir fact'in durumu değiştirilemez.")
+
+        active_connection.execute(
+            """
+            UPDATE facts
+            SET status = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (target_status, fact_id),
+        )
+        if owns_connection:
+            active_connection.commit()
+        return _row_to_dict(_get_fact_row(active_connection, fact_id))
+    except Exception:
+        if owns_connection:
+            active_connection.rollback()
+        raise
+    finally:
+        if owns_connection:
+            active_connection.close()
+
+
+def deprecate_fact(
+    fact_id: int,
+    *,
+    connection: sqlite3.Connection | None = None,
+) -> dict[str, Any]:
+    """Mark a fact as unreliable while preserving its history."""
+
+    return _set_fact_status(fact_id, "deprecated", connection=connection)
+
+
+def soft_delete_fact(
+    fact_id: int,
+    *,
+    connection: sqlite3.Connection | None = None,
+) -> dict[str, Any]:
+    """Logically delete a fact without physically removing it."""
+
+    return _set_fact_status(fact_id, "deleted", connection=connection)
+
+
+def supersede_fact(
+    fact_id: int,
+    new_value: str,
+    *,
+    valid_from: str | date,
+    previous_valid_to: str | date | None = None,
+    visibility: str | None = None,
+    confidence: float | None = None,
+    allow_overlap: bool = False,
+    connection: sqlite3.Connection | None = None,
+) -> dict[str, Any]:
+    """Close an open-ended fact and add its successor atomically.
+
+    By default the previous fact ends one day before the successor starts.
+    Pass previous_valid_to explicitly when the history should contain a gap.
+    """
+
+    _validate_fact_id(fact_id)
+    normalized_value = _required_text(new_value, "new_value")
+    normalized_from = _optional_date(valid_from, "valid_from")
+    if normalized_from is None:
+        raise FactValidationError("valid_from zorunludur.")
+
+    if previous_valid_to is None:
+        try:
+            normalized_previous_to = (
+                date.fromisoformat(normalized_from) - timedelta(days=1)
+            ).isoformat()
+        except OverflowError as error:
+            raise FactValidationError(
+                "valid_from için önceki bir kapanış tarihi hesaplanamıyor."
+            ) from error
+    else:
+        normalized_previous_to = _optional_date(
+            previous_valid_to,
+            "previous_valid_to",
+        )
+
+    if normalized_previous_to is None or normalized_previous_to >= normalized_from:
+        raise FactValidationError(
+            "previous_valid_to, yeni fact'in valid_from tarihinden önce olmalıdır."
+        )
+
+    active_connection, owns_connection = _connection_or_default(connection)
+    savepoint_name = "supersede_fact"
+    try:
+        previous_fact = _get_fact_row(active_connection, fact_id)
+        if previous_fact["status"] != "active":
+            raise FactStateError("Yalnızca active bir fact değiştirilebilir.")
+        if previous_fact["valid_to"] is not None:
+            raise FactStateError(
+                "supersede_fact yalnızca açık uçlu bir fact için kullanılabilir."
+            )
+
+        target_visibility = (
+            previous_fact["visibility"] if visibility is None else visibility
+        )
+        target_confidence = (
+            previous_fact["confidence"] if confidence is None else confidence
+        )
+
+        active_connection.execute(f"SAVEPOINT {savepoint_name}")
+        try:
+            close_fact(
+                fact_id,
+                normalized_previous_to,
+                connection=active_connection,
+            )
+            new_fact_id = add_fact(
+                previous_fact["person_id"],
+                previous_fact["category"],
+                previous_fact["key"],
+                normalized_value,
+                valid_from=normalized_from,
+                visibility=target_visibility,
+                confidence=target_confidence,
+                allow_overlap=allow_overlap,
+                connection=active_connection,
+            )
+        except Exception:
+            active_connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+            active_connection.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+            raise
+        else:
+            active_connection.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+            if owns_connection:
+                active_connection.commit()
+
+        return _row_to_dict(_get_fact_row(active_connection, new_fact_id))
+    except Exception:
+        if owns_connection:
+            active_connection.rollback()
+        raise
     finally:
         if owns_connection:
             active_connection.close()

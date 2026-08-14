@@ -6,12 +6,20 @@ from pathlib import Path
 from src.database.facts import (
     AmbiguousFactError,
     DuplicateFactError,
+    FactNotFoundError,
+    FactStateError,
     FactValidationError,
     OverlappingFactError,
     PersonNotFoundError,
     add_fact,
+    close_fact,
+    deprecate_fact,
+    get_current_facts,
     get_current_fact,
+    get_fact,
     get_fact_history,
+    soft_delete_fact,
+    supersede_fact,
 )
 
 
@@ -254,6 +262,89 @@ class FactsTestCase(unittest.TestCase):
         )
         self.assertEqual(len(history), 2)
 
+        current_facts = get_current_facts(
+            self.person_id,
+            "skill",
+            "programming_language",
+            connection=self.connection,
+        )
+        self.assertEqual(
+            {fact["value"] for fact in current_facts},
+            {"Python", "JavaScript"},
+        )
+
+    def test_current_facts_can_filter_visibility(self):
+        add_fact(
+            self.person_id,
+            "skill",
+            "framework",
+            "Example Public Framework",
+            visibility="public",
+            connection=self.connection,
+        )
+        add_fact(
+            self.person_id,
+            "skill",
+            "framework",
+            "Example Private Framework",
+            visibility="private",
+            allow_overlap=True,
+            connection=self.connection,
+        )
+
+        public_facts = get_current_facts(
+            self.person_id,
+            "skill",
+            "framework",
+            visibility="public",
+            connection=self.connection,
+        )
+
+        self.assertEqual(len(public_facts), 1)
+        self.assertEqual(public_facts[0]["value"], "Example Public Framework")
+
+    def test_close_fact_preserves_history_and_ends_current_period(self):
+        fact_id = add_fact(
+            self.person_id,
+            "project",
+            "role",
+            "Example Role",
+            valid_from="2026-01-01",
+            connection=self.connection,
+        )
+
+        closed = close_fact(
+            fact_id,
+            "2026-06-30",
+            connection=self.connection,
+        )
+        after_period = get_current_fact(
+            self.person_id,
+            "project",
+            "role",
+            as_of="2026-07-01",
+            connection=self.connection,
+        )
+
+        self.assertEqual(closed["valid_to"], "2026-06-30")
+        self.assertIsNone(after_period)
+        self.assertEqual(get_fact(fact_id, connection=self.connection)["status"], "active")
+
+    def test_close_fact_rejects_invalid_range_and_unknown_id(self):
+        fact_id = add_fact(
+            self.person_id,
+            "project",
+            "role",
+            "Example Role",
+            valid_from="2026-01-01",
+            connection=self.connection,
+        )
+
+        with self.assertRaises(FactValidationError):
+            close_fact(fact_id, "2025-12-31", connection=self.connection)
+        with self.assertRaises(FactNotFoundError):
+            close_fact(999, "2026-01-01", connection=self.connection)
+
     def test_history_includes_inactive_records(self):
         add_fact(
             self.person_id,
@@ -279,6 +370,119 @@ class FactsTestCase(unittest.TestCase):
 
         self.assertIsNone(current)
         self.assertEqual(history[0]["status"], "deprecated")
+
+    def test_deprecate_and_soft_delete_preserve_record(self):
+        fact_id = add_fact(
+            self.person_id,
+            "certificate",
+            "name",
+            "Synthetic Certificate",
+            connection=self.connection,
+        )
+
+        deprecated = deprecate_fact(fact_id, connection=self.connection)
+        deleted = soft_delete_fact(fact_id, connection=self.connection)
+
+        self.assertEqual(deprecated["status"], "deprecated")
+        self.assertEqual(deleted["status"], "deleted")
+        stored = get_fact(fact_id, connection=self.connection)
+        self.assertEqual(stored["value"], "Synthetic Certificate")
+        with self.assertRaises(FactStateError):
+            deprecate_fact(fact_id, connection=self.connection)
+
+    def test_supersede_fact_closes_old_record_and_inherits_metadata(self):
+        old_id = add_fact(
+            self.person_id,
+            "education",
+            "class",
+            "3",
+            valid_from="2025-09-01",
+            visibility="private",
+            confidence=0.8,
+            connection=self.connection,
+        )
+
+        new_fact = supersede_fact(
+            old_id,
+            "4",
+            valid_from="2026-09-01",
+            connection=self.connection,
+        )
+        old_fact = get_fact(old_id, connection=self.connection)
+
+        self.assertEqual(old_fact["valid_to"], "2026-08-31")
+        self.assertEqual(new_fact["value"], "4")
+        self.assertEqual(new_fact["visibility"], "private")
+        self.assertEqual(new_fact["confidence"], 0.8)
+        self.assertEqual(
+            get_current_fact(
+                self.person_id,
+                "education",
+                "class",
+                as_of="2026-09-01",
+                connection=self.connection,
+            )["id"],
+            new_fact["id"],
+        )
+
+    def test_supersede_fact_can_leave_an_explicit_gap(self):
+        old_id = add_fact(
+            self.person_id,
+            "education",
+            "class",
+            "3",
+            valid_from="2025-09-01",
+            connection=self.connection,
+        )
+
+        supersede_fact(
+            old_id,
+            "4",
+            valid_from="2026-09-01",
+            previous_valid_to="2026-06-30",
+            connection=self.connection,
+        )
+
+        gap = get_current_fact(
+            self.person_id,
+            "education",
+            "class",
+            as_of="2026-07-15",
+            connection=self.connection,
+        )
+        self.assertIsNone(gap)
+
+    def test_supersede_fact_rolls_back_when_successor_conflicts(self):
+        old_id = add_fact(
+            self.person_id,
+            "education",
+            "class",
+            "3",
+            valid_from="2025-09-01",
+            connection=self.connection,
+        )
+        add_fact(
+            self.person_id,
+            "education",
+            "class",
+            "Conflicting Value",
+            valid_from="2026-09-01",
+            allow_overlap=True,
+            connection=self.connection,
+        )
+
+        with self.assertRaises(OverlappingFactError):
+            supersede_fact(
+                old_id,
+                "4",
+                valid_from="2026-09-01",
+                connection=self.connection,
+            )
+
+        self.assertIsNone(
+            get_fact(old_id, connection=self.connection)["valid_to"],
+            "Başarısız successor ekleme eski fact'i kapatmamalıdır.",
+        )
 
 
 if __name__ == "__main__":

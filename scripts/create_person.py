@@ -7,58 +7,30 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
 
-from src.database.connection import get_connection
+from src.database.persons import (
+    DuplicatePersonError,
+    PersonError,
+    create_person,
+)
 
 
-def create_person(name):
-    connection = get_connection()
-
+def main():
+    person_name = input("Kişi adı: ").strip()
     try:
-        cursor = connection.cursor()
+        person = create_person(person_name)
+    except DuplicatePersonError as error:
+        print("Bu kişi zaten veritabanında kayıtlı.")
+        print(f"ID: {error.person['id']}")
+        print(f"Ad: {error.person['name']}")
+        return
+    except PersonError as error:
+        print(f"Hata: {error}", file=sys.stderr)
+        raise SystemExit(1) from error
 
-        cursor.execute(
-            """
-            SELECT id, name
-            FROM persons
-            WHERE name = ?
-            """,
-            (name,)
-        )
-
-        existing_person = cursor.fetchone()
-
-        if existing_person:
-            print("Bu kişi zaten veritabanında kayıtlı.")
-            print(f"ID: {existing_person['id']}")
-            print(f"Ad: {existing_person['name']}")
-            return existing_person["id"]
-
-        cursor.execute(
-            """
-            INSERT INTO persons (name)
-            VALUES (?)
-            """,
-            (name,)
-        )
-
-        connection.commit()
-
-        person_id = cursor.lastrowid
-
-        print("Kişi başarıyla oluşturuldu.")
-        print(f"ID: {person_id}")
-        print(f"Ad: {name}")
-
-        return person_id
-
-    finally:
-        connection.close()
+    print("Kişi başarıyla oluşturuldu.")
+    print(f"ID: {person['id']}")
+    print(f"Ad: {person['name']}")
 
 
 if __name__ == "__main__":
-    person_name = input("Kişi adı: ").strip()
-
-    if not person_name:
-        raise SystemExit("Kişi adı boş olamaz.")
-
-    create_person(person_name)
+    main()

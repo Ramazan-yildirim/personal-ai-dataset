@@ -11,20 +11,25 @@ data/core/*
 *.sqlite3
 
 # Private/raw/generated datasets
-data/raw/*
-!data/raw/.gitkeep
-data/staging/*
-!data/staging/.gitkeep
-data/supplemental/*
-!data/supplemental/.gitkeep
-data/exports/*
-!data/exports/.gitkeep
+data/raw/**
+!data/raw/**/
+!data/raw/**/.gitkeep
+data/staging/**
+!data/staging/**/
+!data/staging/**/.gitkeep
+data/supplemental/**
+!data/supplemental/**/
+!data/supplemental/**/.gitkeep
+data/exports/**
+!data/exports/**/
+!data/exports/**/.gitkeep
 
 # Documents and logs that may contain personal data
 *.pdf
 *.docx
 *.xlsx
-logs/
+logs/*
+!logs/.gitkeep
 *.log
 
 # Secrets and local configuration

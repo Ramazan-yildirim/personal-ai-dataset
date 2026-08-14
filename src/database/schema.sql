@@ -81,3 +81,9 @@ ON facts(valid_from, valid_to);
 
 CREATE INDEX IF NOT EXISTS idx_facts_lookup
 ON facts(person_id, category, key, status, valid_from, valid_to);
+
+CREATE INDEX IF NOT EXISTS idx_sources_hash
+ON sources(file_hash);
+
+CREATE INDEX IF NOT EXISTS idx_fact_sources_source
+ON fact_sources(source_id);
