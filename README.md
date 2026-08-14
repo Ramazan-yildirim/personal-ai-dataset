@@ -28,6 +28,9 @@ kullanacağı doğrulanmış veri altyapısını sağlar.
 - Source ekleme, SHA-256 dosya hash'i ve duplicate source tespiti
 - Source kayıtlarını silmeden devre dışı bırakma
 - Fact ile source arasında çift yönlü provenance bağlantıları
+- Core DB'den ayrı staging candidate veritabanı
+- Core kurallarını kullanan dry-run candidate validation
+- Audit korumalı approve/reject ve atomik core promotion
 - Gerçek veriye dokunmayan bellek içi testler
 
 ## Mimari
@@ -78,6 +81,7 @@ Local veritabanını oluşturun:
 
 ```powershell
 python scripts/init_db.py
+python scripts/init_staging_db.py
 ```
 
 Kişiyi local veritabanına ekleyin. İsim interaktif olarak istenir ve kaynak
@@ -183,6 +187,42 @@ python scripts/show_fact_source_links.py source 1
 Inactive bir source veya deleted bir fact için yeni bağlantı kurulamaz. Daha
 önce kurulmuş bağlantılar audit ve geçmiş sorguları için korunur.
 
+## Staging candidate ve review akışı
+
+Extraction sonucu bulunan doğrulanmamış bilgi doğrudan core DB'ye eklenmez.
+Önce ayrı local `data/staging/candidates/candidates.db` veritabanına yazılır.
+
+Kaynağa bağlı sentetik bir candidate oluşturma:
+
+```powershell
+python scripts/add_candidate.py 1 education class 4 --source-id 1 --valid-from 2026-09-01 --visibility private --confidence 0.9
+```
+
+Pending candidate kayıtlarını listeleme ve core kurallarıyla dry-run validation:
+
+```powershell
+python scripts/list_candidates.py --review-status pending
+python scripts/manage_candidate.py validate 1
+```
+
+Candidate doğruysa onaylayın:
+
+```powershell
+python scripts/manage_candidate.py approve 1 --note "Belgeyle doğrulandı"
+```
+
+Onay işlemi fact'i core DB'ye ekler ve candidate'ın `source_id` alanı varsa
+fact-source bağlantısını aynı transaction içinde kurar.
+
+Candidate yanlışsa nedenini yazarak reddedin:
+
+```powershell
+python scripts/manage_candidate.py reject 1 --note "Tarih bilgisi hatalı"
+```
+
+Rejected candidate fiziksel olarak silinmez. Approved veya rejected bir kayıt
+tekrar incelenemez; düzeltme gerekiyorsa yeni candidate oluşturulur.
+
 ## Testler
 
 ```powershell
@@ -223,12 +263,11 @@ yapısını göstermek gerekirse yalnızca güvenli `.gitkeep` dosyaları kullan
 
 ## Yol haritası
 
-1. Validation ve staging candidate sistemi
-2. Raw document ingestion
-3. Manuel candidate onay/red akışı
-4. Transformer exporter
-5. Fine-tuning exporter
-6. RAG exporter
+1. Raw document ingestion
+2. Metin çıkarma ve extraction adaptörleri
+3. Transformer exporter
+4. Fine-tuning exporter
+5. RAG exporter
 
 Katkı yapmadan önce mevcut kodu ve gizlilik sınırlarını inceleyin; minimum,
 test edilebilir değişiklikleri tercih edin.
