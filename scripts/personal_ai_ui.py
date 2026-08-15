@@ -269,6 +269,34 @@ class PersonalDatasetApp(tk.Tk):
             text="Onaylanmış aktif fact'ler",
             style="Section.TLabel",
         ).pack(anchor="w", pady=(6, 5))
+        fact_actions = ttk.LabelFrame(
+            self.people_tab,
+            text="Seçili bilgi işlemleri",
+            padding=7,
+        )
+        fact_actions.pack(fill="x", pady=(0, 6))
+        ttk.Button(
+            fact_actions,
+            text="Düzenle / yeni sürüm oluştur",
+            command=self.edit_selected_fact,
+        ).pack(side="left")
+        ttk.Button(
+            fact_actions,
+            text="Sil (audit kaydı korunur)",
+            command=self.delete_selected_fact,
+        ).pack(side="left", padx=6)
+        self.show_fact_history = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            fact_actions,
+            text="Tarihçe ve silinenleri göster",
+            variable=self.show_fact_history,
+            command=self.refresh_facts,
+        ).pack(side="right")
+        ttk.Label(
+            fact_actions,
+            text="Önce aşağıdaki tablodan bir bilgi seçin.",
+            foreground="#475569",
+        ).pack(side="right", padx=12)
         self.facts_tree = self._tree(
             self.people_tab,
             (
@@ -283,33 +311,6 @@ class PersonalDatasetApp(tk.Tk):
             ),
             height=11,
         )
-        fact_actions = ttk.Frame(self.people_tab)
-        fact_actions.pack(fill="x", pady=(6, 0))
-        self.show_fact_history = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            fact_actions,
-            text="Tarihçe ve silinenleri göster",
-            variable=self.show_fact_history,
-            command=self.refresh_facts,
-        ).pack(side="left")
-        ttk.Label(
-            fact_actions,
-            text=(
-                "Düzenleme eski sürümü kapatır; silme fiziksel değil "
-                "mantıksaldır."
-            ),
-            foreground="#475569",
-        ).pack(side="left")
-        ttk.Button(
-            fact_actions,
-            text="Seçili bilgiyi düzenle / yeni sürüm",
-            command=self.edit_selected_fact,
-        ).pack(side="right")
-        ttk.Button(
-            fact_actions,
-            text="Seçili bilgiyi sil",
-            command=self.delete_selected_fact,
-        ).pack(side="right", padx=6)
 
     def _build_documents(self) -> None:
         form = ttk.LabelFrame(self.documents_tab, text="Belge ekle", padding=10)
