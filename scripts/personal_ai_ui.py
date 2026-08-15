@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from pathlib import Path
 import sys
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any, Callable
 
 
@@ -16,6 +17,12 @@ sys.path.append(str(PROJECT_ROOT))
 
 from src.database.migrations import initialize_core_database
 from src.database.persons import create_person, list_persons
+from src.database.facts import (
+    get_fact,
+    list_facts,
+    soft_delete_fact,
+    supersede_fact,
+)
 from src.database.sources import add_source, deactivate_source, list_sources
 from src.database.staging_connection import initialize_staging_database
 from src.exporters.common import EXPORT_ROOT, load_export_facts
@@ -270,11 +277,39 @@ class PersonalDatasetApp(tk.Tk):
                 ("key", "Anahtar", 140),
                 ("value", "Değer", 310),
                 ("visibility", "Görünürlük", 90),
+                ("status", "Durum", 80),
                 ("valid_from", "Başlangıç", 100),
                 ("valid_to", "Bitiş", 100),
             ),
             height=11,
         )
+        fact_actions = ttk.Frame(self.people_tab)
+        fact_actions.pack(fill="x", pady=(6, 0))
+        self.show_fact_history = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            fact_actions,
+            text="Tarihçe ve silinenleri göster",
+            variable=self.show_fact_history,
+            command=self.refresh_facts,
+        ).pack(side="left")
+        ttk.Label(
+            fact_actions,
+            text=(
+                "Düzenleme eski sürümü kapatır; silme fiziksel değil "
+                "mantıksaldır."
+            ),
+            foreground="#475569",
+        ).pack(side="left")
+        ttk.Button(
+            fact_actions,
+            text="Seçili bilgiyi düzenle / yeni sürüm",
+            command=self.edit_selected_fact,
+        ).pack(side="right")
+        ttk.Button(
+            fact_actions,
+            text="Seçili bilgiyi sil",
+            command=self.delete_selected_fact,
+        ).pack(side="right", padx=6)
 
     def _build_documents(self) -> None:
         form = ttk.LabelFrame(self.documents_tab, text="Belge ekle", padding=10)
@@ -576,25 +611,28 @@ class PersonalDatasetApp(tk.Tk):
         except ValueError:
             return
         try:
-            facts = load_export_facts(visibilities=VISIBILITIES)
+            facts = list_facts(
+                person_id,
+                include_inactive=self.show_fact_history.get(),
+            )
         except Exception as error:
             self.status_var.set(f"Fact yenileme hatası: {error}")
             return
         for fact in facts:
-            if fact["person_id"] == person_id:
-                self.facts_tree.insert(
-                    "",
-                    "end",
-                    values=(
-                        fact["id"],
-                        fact["category"],
-                        fact["key"],
-                        fact["value"],
-                        fact["visibility"],
-                        fact["valid_from"] or "",
-                        fact["valid_to"] or "",
-                    ),
-                )
+            self.facts_tree.insert(
+                "",
+                "end",
+                values=(
+                    fact["id"],
+                    fact["category"],
+                    fact["key"],
+                    fact["value"],
+                    fact["visibility"],
+                    fact["status"],
+                    fact["valid_from"] or "",
+                    fact["valid_to"] or "",
+                ),
+            )
 
     def refresh_sources(self) -> None:
         self._clear(self.sources_tree)
@@ -670,6 +708,154 @@ class PersonalDatasetApp(tk.Tk):
         )
         if result is not None:
             self.c_value.set("")
+
+    def edit_selected_fact(self) -> None:
+        try:
+            fact_id = self._selected_id(self.facts_tree)
+            fact = get_fact(fact_id)
+            if fact["valid_to"] is not None:
+                raise ValueError(
+                    "Yalnızca açık uçlu güncel bir fact yeni sürümle "
+                    "değiştirilebilir."
+                )
+        except Exception as error:
+            messagebox.showerror("Düzenleme yapılamadı", str(error), parent=self)
+            return
+
+        new_value = simpledialog.askstring(
+            "Yeni değer",
+            (
+                f"{fact['category']}.{fact['key']} için yeni değeri girin.\n"
+                "Kategori ve anahtar değişecekse eski kaydı silip yeni "
+                "candidate oluşturun."
+            ),
+            initialvalue=fact["value"],
+            parent=self,
+        )
+        if new_value is None:
+            return
+        valid_from = simpledialog.askstring(
+            "Yeni sürüm tarihi",
+            "Yeni değerin başlangıç tarihi (YYYY-MM-DD):",
+            initialvalue=date.today().isoformat(),
+            parent=self,
+        )
+        if valid_from is None:
+            return
+        previous_valid_to = simpledialog.askstring(
+            "Eski sürümün bitişi",
+            (
+                "Eski değerin bitiş tarihi (YYYY-MM-DD). Boş bırakırsanız "
+                "yeni başlangıçtan bir gün önce hesaplanır:"
+            ),
+            initialvalue="",
+            parent=self,
+        )
+        if previous_valid_to is None:
+            return
+        visibility = simpledialog.askstring(
+            "Görünürlük",
+            "Yeni sürüm visibility değeri (public/private/internal):",
+            initialvalue=fact["visibility"],
+            parent=self,
+        )
+        if visibility is None:
+            return
+        if visibility not in VISIBILITIES:
+            messagebox.showerror(
+                "Geçersiz görünürlük",
+                "Visibility public, private veya internal olmalıdır.",
+                parent=self,
+            )
+            return
+        confidence = simpledialog.askstring(
+            "Confidence",
+            "Yeni sürüm confidence değeri (0.0-1.0):",
+            initialvalue=str(fact["confidence"]),
+            parent=self,
+        )
+        if confidence is None:
+            return
+
+        active_sources = [
+            source for source in self.sources if source["is_active"]
+        ]
+        source_summary = "\n".join(
+            f"{source['id']}: {source['title']}"
+            for source in active_sources[:12]
+        )
+        source_value = simpledialog.askstring(
+            "Yeni sürümün kaynağı",
+            (
+                "Bu değişikliği doğrulayan source ID'yi girin. "
+                "Kaynak yoksa boş bırakın.\n\n"
+                f"{source_summary or 'Aktif kaynak bulunmuyor.'}"
+            ),
+            initialvalue="",
+            parent=self,
+        )
+        if source_value is None:
+            return
+        try:
+            source_id = (
+                int(source_value.strip()) if source_value.strip() else None
+            )
+            if source_id is not None and source_id <= 0:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror(
+                "Geçersiz kaynak",
+                "Source ID pozitif bir tam sayı olmalıdır.",
+                parent=self,
+            )
+            return
+
+        if not messagebox.askyesno(
+            "Yeni sürümü oluştur",
+            (
+                f"Eski değer: {fact['value']}\n"
+                f"Yeni değer: {new_value}\n"
+                f"Yeni başlangıç: {valid_from}\n\n"
+                "Eski kayıt silinmeyecek; tarihsel sürüm olarak korunacak."
+            ),
+            parent=self,
+        ):
+            return
+
+        self._perform(
+            lambda: supersede_fact(
+                fact_id,
+                new_value,
+                valid_from=valid_from,
+                previous_valid_to=optional_text(previous_valid_to),
+                visibility=visibility,
+                confidence=float(confidence),
+                source_id=source_id,
+            ),
+            "Bilgi düzenlendi; eski sürüm tarihçede korundu.",
+        )
+
+    def delete_selected_fact(self) -> None:
+        try:
+            fact_id = self._selected_id(self.facts_tree)
+            fact = get_fact(fact_id)
+        except Exception as error:
+            messagebox.showerror("Silme yapılamadı", str(error), parent=self)
+            return
+        if not messagebox.askyesno(
+            "Bilgiyi mantıksal olarak sil",
+            (
+                f"{fact['category']}.{fact['key']}: {fact['value']}\n\n"
+                "Kayıt export ve normal sorgulardan çıkarılacak. Audit için "
+                "veritabanında deleted durumunda korunacak."
+            ),
+            parent=self,
+        ):
+            return
+        self._perform(
+            lambda: soft_delete_fact(fact_id),
+            "Bilgi mantıksal olarak silindi; audit kaydı korundu.",
+        )
 
     def choose_document(self) -> None:
         path = filedialog.askopenfilename(

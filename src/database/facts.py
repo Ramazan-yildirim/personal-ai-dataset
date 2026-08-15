@@ -7,6 +7,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from src.database.connection import get_connection
+from src.database.fact_sources import link_fact_source
 from src.database.persons import PersonNotFoundError as PersonServiceNotFoundError
 
 
@@ -416,6 +417,38 @@ def get_current_fact(
     return facts[0]
 
 
+def list_facts(
+    person_id: int,
+    *,
+    include_inactive: bool = False,
+    connection: sqlite3.Connection | None = None,
+) -> list[dict[str, Any]]:
+    """List a person's facts, optionally including audit-only statuses."""
+
+    _validate_person_id(person_id)
+    if not isinstance(include_inactive, bool):
+        raise FactValidationError("include_inactive boolean olmalıdır.")
+
+    active_connection, owns_connection = _connection_or_default(connection)
+    try:
+        _ensure_person_exists(active_connection, person_id)
+        query = "SELECT * FROM facts WHERE person_id = ?"
+        if not include_inactive:
+            query += " AND status = 'active'"
+        query += """
+            ORDER BY
+                category,
+                key,
+                COALESCE(valid_from, ''),
+                id
+        """
+        rows = active_connection.execute(query, (person_id,)).fetchall()
+        return [_row_to_dict(row) for row in rows]
+    finally:
+        if owns_connection:
+            active_connection.close()
+
+
 def get_fact_history(
     person_id: int,
     category: str,
@@ -579,6 +612,7 @@ def supersede_fact(
     previous_valid_to: str | date | None = None,
     visibility: str | None = None,
     confidence: float | None = None,
+    source_id: int | None = None,
     allow_overlap: bool = False,
     connection: sqlite3.Connection | None = None,
 ) -> dict[str, Any]:
@@ -650,6 +684,12 @@ def supersede_fact(
                 allow_overlap=allow_overlap,
                 connection=active_connection,
             )
+            if source_id is not None:
+                link_fact_source(
+                    new_fact_id,
+                    source_id,
+                    connection=active_connection,
+                )
         except Exception:
             active_connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
             active_connection.execute(f"RELEASE SAVEPOINT {savepoint_name}")

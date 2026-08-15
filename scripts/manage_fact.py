@@ -15,6 +15,7 @@ from src.database.facts import (
     soft_delete_fact,
     supersede_fact,
 )
+from src.database.fact_sources import FactSourceError
 
 
 def parse_args():
@@ -52,6 +53,7 @@ def parse_args():
         choices=("public", "private", "internal"),
     )
     supersede_parser.add_argument("--confidence", type=float)
+    supersede_parser.add_argument("--source-id", type=int)
     supersede_parser.add_argument("--allow-overlap", action="store_true")
 
     return parser.parse_args()
@@ -74,9 +76,10 @@ def main():
                 previous_valid_to=args.previous_valid_to,
                 visibility=args.visibility,
                 confidence=args.confidence,
+                source_id=args.source_id,
                 allow_overlap=args.allow_overlap,
             )
-    except FactError as error:
+    except (FactError, FactSourceError) as error:
         print(f"Hata: {error}", file=sys.stderr)
         raise SystemExit(1) from error
 

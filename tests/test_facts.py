@@ -3,6 +3,10 @@ import unittest
 from pathlib import Path
 
 
+from src.database.fact_sources import (
+    LinkSourceNotFoundError,
+    get_sources_for_fact,
+)
 from src.database.facts import (
     AmbiguousFactError,
     DuplicateFactError,
@@ -18,9 +22,11 @@ from src.database.facts import (
     get_current_fact,
     get_fact,
     get_fact_history,
+    list_facts,
     soft_delete_fact,
     supersede_fact,
 )
+from src.database.sources import add_source
 
 
 SCHEMA_PATH = Path(__file__).resolve().parents[1] / "src" / "database" / "schema.sql"
@@ -390,6 +396,17 @@ class FactsTestCase(unittest.TestCase):
         with self.assertRaises(FactStateError):
             deprecate_fact(fact_id, connection=self.connection)
 
+        self.assertEqual(
+            list_facts(self.person_id, connection=self.connection),
+            [],
+        )
+        audit_rows = list_facts(
+            self.person_id,
+            include_inactive=True,
+            connection=self.connection,
+        )
+        self.assertEqual(audit_rows[0]["status"], "deleted")
+
     def test_supersede_fact_closes_old_record_and_inherits_metadata(self):
         old_id = add_fact(
             self.person_id,
@@ -451,6 +468,58 @@ class FactsTestCase(unittest.TestCase):
             connection=self.connection,
         )
         self.assertIsNone(gap)
+
+    def test_supersede_fact_links_selected_source_atomically(self):
+        old_id = add_fact(
+            self.person_id,
+            "profile",
+            "role",
+            "Old Synthetic Role",
+            valid_from="2025-01-01",
+            connection=self.connection,
+        )
+        source = add_source(
+            "manual",
+            "Synthetic correction",
+            connection=self.connection,
+        )
+
+        new_fact = supersede_fact(
+            old_id,
+            "New Synthetic Role",
+            valid_from="2026-01-01",
+            source_id=source["id"],
+            connection=self.connection,
+        )
+
+        linked = get_sources_for_fact(
+            new_fact["id"],
+            connection=self.connection,
+        )
+        self.assertEqual([item["id"] for item in linked], [source["id"]])
+
+    def test_supersede_rolls_back_when_source_is_unknown(self):
+        old_id = add_fact(
+            self.person_id,
+            "profile",
+            "role",
+            "Synthetic Role",
+            valid_from="2025-01-01",
+            connection=self.connection,
+        )
+
+        with self.assertRaises(LinkSourceNotFoundError):
+            supersede_fact(
+                old_id,
+                "Changed Role",
+                valid_from="2026-01-01",
+                source_id=999,
+                connection=self.connection,
+            )
+
+        self.assertIsNone(
+            get_fact(old_id, connection=self.connection)["valid_to"]
+        )
 
     def test_supersede_fact_rolls_back_when_successor_conflicts(self):
         old_id = add_fact(

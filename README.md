@@ -113,7 +113,8 @@ python scripts/personal_ai_ui.py
 Uygulama veritabanlarını idempotent biçimde hazırlar ve şu sekmeleri sunar:
 
 - **Kişiler ve Manuel Bilgi:** kişi oluşturma, dosyalı/dosyasız kaynağa bağlı
-  candidate girişi ve onaylanmış fact görünümü
+  candidate girişi, onaylanmış fact görünümü, sürüm korumalı düzenleme ve
+  mantıksal silme
 - **Belgeler:** belge ingestion, extraction önizlemesi, manuel source ve
   structured candidate bundle import
 - **Onay Merkezi:** pending/approved/rejected candidate listeleme, validate,
@@ -173,6 +174,12 @@ Tek değerli açık uçlu bir fact'i yeni değerle değiştirme:
 python scripts/manage_fact.py supersede 1 4 --valid-from 2026-09-01
 ```
 
+Yeni sürümü onu doğrulayan bir source ile atomik bağlamak için:
+
+```powershell
+python scripts/manage_fact.py supersede 1 4 --valid-from 2026-09-01 --source-id 7
+```
+
 Varsayılan olarak eski kayıt yeni başlangıçtan bir gün önce kapatılır. Arada
 bilinçli bir boşluk olacaksa eski bitiş tarihini açıkça verin:
 
@@ -191,6 +198,9 @@ python scripts/manage_fact.py delete 1
 `deprecated`, sonradan yanlış veya güvenilmez olduğu anlaşılan kayıtlar;
 `deleted` ise audit amacıyla fiziksel olarak tutulan mantıksal silinmiş
 kayıtlar içindir. Tarihsel olarak eski ama doğru kayıtlar `active` kalabilir.
+Görsel arayüzde bir fact seçerek **düzenle / yeni sürüm** veya **sil**
+işlemleri yapılabilir. “Tarihçe ve silinenleri göster” seçeneği audit
+kayıtlarını tekrar görünür yapar.
 
 ## Source ve provenance kullanımı
 
