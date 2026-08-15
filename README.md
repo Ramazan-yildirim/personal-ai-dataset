@@ -66,7 +66,8 @@ dosyaları yeniden üretilebilir çıktıdır.
 - Python 3.10 veya üzeri
 - SQLite (Python standart kütüphanesiyle gelir)
 
-Şu anda harici Python bağımlılığı yoktur.
+PDF metin extraction için `pypdf` kullanılır. Diğer temel işlemler Python
+standart kütüphanesiyle çalışır.
 
 ## Hızlı başlangıç
 
@@ -75,6 +76,7 @@ Repository'yi klonlayın ve proje kökünde çalışın:
 ```powershell
 git clone https://github.com/Ramazan-yildirim/personal-ai-dataset.git
 cd personal-ai-dataset
+python -m pip install -r requirements.txt
 ```
 
 Local veritabanını oluşturun:
@@ -154,11 +156,19 @@ kayıtlar içindir. Tarihsel olarak eski ama doğru kayıtlar `active` kalabilir
 
 ## Source ve provenance kullanımı
 
-Kaynak belgesini önce uygun `data/raw/` alt klasörüne yerleştirin. Dosyanın
-SHA-256 hash'i ekleme sırasında otomatik hesaplanır:
+Tercih edilen yöntem belgeyi ingestion komutuna vermektir. Komut belgeyi uygun
+`data/raw/` alt klasörüne güvenli biçimde kopyalar, SHA-256 hash'ini hesaplar ve
+source kaydını oluşturur:
 
 ```powershell
-python scripts/add_source.py cv "Synthetic CV" --file-path data/raw/cv/example_cv.txt --source-date 2026-01-15
+python scripts/ingest_document.py cv "Synthetic CV" C:\incoming\example_cv.pdf --source-date 2026-01-15
+```
+
+Dosya zaten raw klasöründeyse veya source kaydını kopyalama olmadan manuel
+oluşturmak gerekiyorsa `add_source.py` kullanılabilir:
+
+```powershell
+python scripts/add_source.py cv "Synthetic CV" --file-path data/raw/cv/example_cv.pdf --source-date 2026-01-15
 ```
 
 Dosyasız manuel beyan gibi bir kaynak da oluşturulabilir:
@@ -186,6 +196,29 @@ python scripts/show_fact_source_links.py source 1
 
 Inactive bir source veya deleted bir fact için yeni bağlantı kurulamaz. Daha
 önce kurulmuş bağlantılar audit ve geçmiş sorguları için korunur.
+
+## Belge extraction
+
+Kayıtlı bir source belgesinden metin çıkarın:
+
+```powershell
+python scripts/extract_source.py 1
+```
+
+Çıktı `data/staging/extracted/` altında hash içeren yeniden üretilebilir bir
+JSON dosyasına yazılır. Extraction öncesinde raw belgenin hash'i tekrar
+doğrulanır; kayıt sonrasında değiştirilmiş belge işlenmez.
+
+Desteklenen adaptörler:
+
+- UTF-8/CP1254 TXT, Markdown ve CSV
+- Deterministik JSON
+- Görünür metni alan HTML
+- Standart kütüphaneyle DOCX
+- `pypdf` ile PDF
+
+PNG/JPG dosyaları arşivlenebilir ancak OCR adaptörü henüz yoktur. Taranmış,
+metin katmanı bulunmayan PDF belgeleri de OCR gerektirir.
 
 ## Staging candidate ve review akışı
 
@@ -222,6 +255,66 @@ python scripts/manage_candidate.py reject 1 --note "Tarih bilgisi hatalı"
 
 Rejected candidate fiziksel olarak silinmez. Approved veya rejected bir kayıt
 tekrar incelenemez; düzeltme gerekiyorsa yeni candidate oluşturulur.
+
+### Structured candidate bundle import
+
+Bu repository doğal dil belgesini yorumlayan bir LLM çalıştırmaz. Harici veya
+kural tabanlı bir extraction aracı candidate önerilerini
+`examples/candidate_bundle.example.json` formatında üretebilir. Bundle'ı
+staging'e atomik ve idempotent biçimde alın:
+
+```powershell
+python scripts/import_candidates.py path\to\candidate_bundle.json
+```
+
+Aynı bundle tekrar import edilirse exact candidate kayıtları çoğaltılmaz.
+Bundle içindeki tek bir kayıt yapısal olarak hatalıysa hiçbir kayıt eklenmez.
+Import edilen candidate'lar yine validate ve manuel review aşamasından geçer.
+
+## Dataset exportları
+
+Tüm exporter'lar varsayılan olarak yalnızca `public` ve `active` fact'leri
+kullanır. Private veya internal bilgi ancak açık komut bayrağıyla eklenir.
+
+Transformer corpus:
+
+```powershell
+python scripts/export_datasets.py transformer
+```
+
+`personal_corpus.txt` yalnızca core personal fact'leri içerir.
+`full_corpus.txt` buna `data/supplemental/transformer/` altındaki TXT/Markdown
+corpuslarını ekler.
+
+Fine-tuning chat JSONL:
+
+```powershell
+python scripts/export_datasets.py finetuning
+```
+
+Deterministik `train.jsonl`, `validation.jsonl` ve `test.jsonl` üretilir.
+
+RAG documents ve chunks:
+
+```powershell
+python scripts/export_datasets.py rag
+```
+
+Tüm çıktıları birlikte yeniden üretmek için:
+
+```powershell
+python scripts/export_datasets.py all
+```
+
+Private fact'lerin bilinçli olarak gerektiği yalnızca local kullanımda:
+
+```powershell
+python scripts/export_datasets.py all --include-private
+```
+
+`--include-internal` daha hassastır ve normal model datasetlerinde
+kullanılmamalıdır. Üretilen dosyalar `data/exports/` altında tutulur, Git'e
+girmez ve source of truth değildir.
 
 ## Testler
 
@@ -261,13 +354,16 @@ yapısını göstermek gerekirse yalnızca güvenli `.gitkeep` dosyaları kullan
 - Gerçek kişisel veriyi kod, test veya public örneklere koymayın.
 - Bir fact'i mümkün olduğunda kaynak kaydıyla ilişkilendirin.
 
-## Yol haritası
+## Mevcut sınırlar ve isteğe bağlı geliştirmeler
 
-1. Raw document ingestion
-2. Metin çıkarma ve extraction adaptörleri
-3. Transformer exporter
-4. Fine-tuning exporter
-5. RAG exporter
+Çekirdek pipeline; ingestion, text extraction, staging review, core promotion
+ve üç model export formatıyla uçtan uca hazırdır. Bilinen sınırlar:
+
+1. PNG/JPG ve taranmış PDF belgeleri için OCR adaptörü yoktur.
+2. Doğal dilden semantik candidate üretimi bu dataset repository'sinde model
+   çalıştırmaz; ayrı extraction sistemi structured bundle üretmelidir.
+3. Şema büyüdükçe numaralı migration altyapısı eklenebilir.
+4. Büyük datasetler için streaming exporter ve performans ölçümleri eklenebilir.
 
 Katkı yapmadan önce mevcut kodu ve gizlilik sınırlarını inceleyin; minimum,
 test edilebilir değişiklikleri tercih edin.
