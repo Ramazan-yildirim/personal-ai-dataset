@@ -15,10 +15,10 @@ kullanacağı doğrulanmış veri altyapısını sağlar.
 
 ## Mevcut durum
 
-İlk geliştirme aşamasında aşağıdaki özellikler hazırdır:
+Aşağıdaki temel özellikler hazırdır:
 
 - SQLite şeması: `persons`, `facts`, `sources` ve `fact_sources`
-- Merkezi SQLite bağlantısı
+- Merkezi SQLite bağlantısı ve checksum korumalı numaralı migrations
 - Kişi oluşturma ve listeleme CLI'ları
 - Fact ekleme, güncel/tarihli sorgulama ve geçmiş sorgulama
 - Çok değerli fact key'leri için çoğul sorgu
@@ -31,6 +31,10 @@ kullanacağı doğrulanmış veri altyapısını sağlar.
 - Core DB'den ayrı staging candidate veritabanı
 - Core kurallarını kullanan dry-run candidate validation
 - Audit korumalı approve/reject ve atomik core promotion
+- Hash tabanlı, sürüm korumalı raw belge ingestion
+- TXT, Markdown, CSV, JSON, HTML, DOCX ve PDF metin extraction
+- Structured candidate bundle import
+- Gizlilik kontrollü Transformer, fine-tuning ve RAG exporter'ları
 - Gerçek veriye dokunmayan bellek içi testler
 
 ## Mimari
@@ -85,6 +89,10 @@ Local veritabanını oluşturun:
 python scripts/init_db.py
 python scripts/init_staging_db.py
 ```
+
+Bu komutlar bekleyen numaralı migration'ları sırayla uygular. Tekrar
+çalıştırılmaları güvenlidir; uygulanmış migration dosyası sonradan
+değiştirilirse checksum kontrolü işlemi durdurur.
 
 Kişiyi local veritabanına ekleyin. İsim interaktif olarak istenir ve kaynak
 koduna yazılmaz:
@@ -362,8 +370,7 @@ ve üç model export formatıyla uçtan uca hazırdır. Bilinen sınırlar:
 1. PNG/JPG ve taranmış PDF belgeleri için OCR adaptörü yoktur.
 2. Doğal dilden semantik candidate üretimi bu dataset repository'sinde model
    çalıştırmaz; ayrı extraction sistemi structured bundle üretmelidir.
-3. Şema büyüdükçe numaralı migration altyapısı eklenebilir.
-4. Büyük datasetler için streaming exporter ve performans ölçümleri eklenebilir.
+3. Büyük datasetler için streaming exporter ve performans ölçümleri eklenebilir.
 
 Katkı yapmadan önce mevcut kodu ve gizlilik sınırlarını inceleyin; minimum,
 test edilebilir değişiklikleri tercih edin.

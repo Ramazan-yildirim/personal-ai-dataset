@@ -1,31 +1,31 @@
-import sqlite3
 from pathlib import Path
+import sys
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-
-DATABASE_PATH = PROJECT_ROOT / "data" / "core" / "personal_data.db"
-SCHEMA_PATH = PROJECT_ROOT / "src" / "database" / "schema.sql"
+sys.path.append(str(PROJECT_ROOT))
 
 
-def initialize_database():
-    DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
+from src.database.migrations import (
+    MigrationError,
+    initialize_core_database,
+)
 
-    with open(SCHEMA_PATH, "r", encoding="utf-8") as file:
-        schema = file.read()
 
-    connection = sqlite3.connect(DATABASE_PATH)
-
+def main():
     try:
-        connection.executescript(schema)
-        connection.commit()
+        database_path, applied = initialize_core_database()
+    except MigrationError as error:
+        print(f"Hata: {error}", file=sys.stderr)
+        raise SystemExit(1) from error
 
-        print("Veritabanı başarıyla oluşturuldu.")
-        print(f"Konum: {DATABASE_PATH}")
-
-    finally:
-        connection.close()
+    if applied:
+        versions = ", ".join(f"{item.version:03d}" for item in applied)
+        print(f"Uygulanan migration: {versions}")
+    else:
+        print("Veritabanı şeması zaten güncel.")
+    print(f"Konum: {database_path}")
 
 
 if __name__ == "__main__":
-    initialize_database()
+    main()

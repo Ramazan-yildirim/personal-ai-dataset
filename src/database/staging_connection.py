@@ -2,6 +2,10 @@ import sqlite3
 from pathlib import Path
 
 from src.database.connection import DATABASE_PATH, PROJECT_ROOT
+from src.database.migrations import (
+    STAGING_MIGRATIONS_DIR,
+    apply_migrations,
+)
 
 
 STAGING_DATABASE_PATH = (
@@ -23,13 +27,16 @@ def get_staging_connection(
 
 def initialize_staging_database(
     database_path: str | Path | None = None,
+    *,
+    migrations_dir: str | Path | None = None,
 ) -> Path:
     path = Path(database_path) if database_path is not None else STAGING_DATABASE_PATH
-    schema = STAGING_SCHEMA_PATH.read_text(encoding="utf-8")
     connection = get_staging_connection(path)
     try:
-        connection.executescript(schema)
-        connection.commit()
+        apply_migrations(
+            connection,
+            migrations_dir or STAGING_MIGRATIONS_DIR,
+        )
     finally:
         connection.close()
     return path
