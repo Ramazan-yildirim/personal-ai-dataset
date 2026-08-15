@@ -113,8 +113,8 @@ python scripts/personal_ai_ui.py
 Uygulama veritabanlarını idempotent biçimde hazırlar ve şu sekmeleri sunar:
 
 - **Kişiler ve Manuel Bilgi:** kişi oluşturma, dosyalı/dosyasız kaynağa bağlı
-  candidate girişi, onaylanmış fact görünümü, sürüm korumalı düzenleme ve
-  mantıksal silme
+  candidate girişi, onaylanmış fact görünümü, alan bazlı audit düzeltmesi,
+  yeni sürüm oluşturma ve mantıksal silme
 - **Belgeler:** belge ingestion, extraction önizlemesi, manuel source ve
   structured candidate bundle import
 - **Onay Merkezi:** pending/approved/rejected candidate listeleme, validate,
@@ -168,6 +168,38 @@ python scripts/add_fact.py 1 skill programming_language JavaScript --allow-overl
 python scripts/get_facts.py 1 skill programming_language
 ```
 
+### Veri giriş hatasını düzeltme
+
+Fact doğru ancak bir alanı eksik veya yanlış girildiyse **Kişiler ve Manuel
+Bilgi → Alanları düzelt** işlemini kullanın. Açılan formda değiştirmediğiniz
+alanlar korunur. Boş tarih alanı `NULL` anlamına gelir. Her düzeltmede neden
+zorunludur; değişen alanların önceki ve yeni değerleri `fact_corrections`
+audit tablosuna atomik yazılır.
+
+Eksik başlangıç tarihini ekleme:
+
+```powershell
+python scripts/manage_fact.py correct 1 --valid-from 2025-09-01 --note "Eksik başlangıç tarihi eklendi"
+```
+
+Yanlış tarihleri diğer alanlara dokunmadan değiştirme:
+
+```powershell
+python scripts/manage_fact.py correct 1 --valid-from 2025-10-01 --valid-to 2026-06-30 --note "Tarihler kaynağa göre düzeltildi"
+```
+
+Yanlış girilmiş bitiş tarihini temizleme:
+
+```powershell
+python scripts/manage_fact.py correct 1 --clear-valid-to --note "Bitiş tarihi geçerli değildi"
+```
+
+Kategori, key, value, visibility ve confidence alanları da aynı `correct`
+komutuyla seçici biçimde düzeltilebilir. Fact ID, status, değiştirilmemiş
+alanlar ve fact-source bağlantıları korunur.
+
+### Bilginin zaman içinde değişmesi
+
 Tek değerli açık uçlu bir fact'i yeni değerle değiştirme:
 
 ```powershell
@@ -198,9 +230,9 @@ python scripts/manage_fact.py delete 1
 `deprecated`, sonradan yanlış veya güvenilmez olduğu anlaşılan kayıtlar;
 `deleted` ise audit amacıyla fiziksel olarak tutulan mantıksal silinmiş
 kayıtlar içindir. Tarihsel olarak eski ama doğru kayıtlar `active` kalabilir.
-Görsel arayüzde bir fact seçerek **düzenle / yeni sürüm** veya **sil**
-işlemleri yapılabilir. “Tarihçe ve silinenleri göster” seçeneği audit
-kayıtlarını tekrar görünür yapar.
+Görsel arayüzde **Alanları düzelt**, **Yeni sürüm oluştur**, **Sil** ve
+**Düzeltme geçmişi** ayrı işlemlerdir. “Tarihçe ve silinenleri göster”
+seçeneği inactive audit kayıtlarını da görünür yapar.
 
 ## Source ve provenance kullanımı
 

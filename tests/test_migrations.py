@@ -33,7 +33,7 @@ class MigrationsTestCase(unittest.TestCase):
         _, second = initialize_core_database(database_path)
 
         self.assertEqual(path, database_path)
-        self.assertEqual([migration.version for migration in first], [1])
+        self.assertEqual([migration.version for migration in first], [1, 2])
         self.assertEqual(second, [])
         connection = get_connection(database_path)
         try:
@@ -44,12 +44,13 @@ class MigrationsTestCase(unittest.TestCase):
                 )
             }
             self.assertIn("facts", tables)
+            self.assertIn("fact_corrections", tables)
             self.assertIn("schema_migrations", tables)
             self.assertEqual(
                 connection.execute(
                     "SELECT COUNT(*) FROM schema_migrations"
                 ).fetchone()[0],
-                1,
+                2,
             )
             self.assertEqual(
                 connection.execute("PRAGMA foreign_keys").fetchone()[0],
@@ -73,7 +74,10 @@ class MigrationsTestCase(unittest.TestCase):
 
         _, applied = initialize_core_database(database_path)
 
-        self.assertEqual([migration.version for migration in applied], [1])
+        self.assertEqual(
+            [migration.version for migration in applied],
+            [1, 2],
+        )
         connection = get_connection(database_path)
         try:
             name = connection.execute(

@@ -18,7 +18,9 @@ sys.path.append(str(PROJECT_ROOT))
 from src.database.migrations import initialize_core_database
 from src.database.persons import create_person, list_persons
 from src.database.facts import (
+    correct_fact,
     get_fact,
+    get_fact_corrections,
     list_facts,
     soft_delete_fact,
     supersede_fact,
@@ -76,6 +78,125 @@ def selected_visibilities(
 
 def json_text(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2, default=str)
+
+
+class FactCorrectionDialog(simpledialog.Dialog):
+    """Edit all correctable fact fields without changing untouched metadata."""
+
+    def __init__(self, parent: tk.Misc, fact: dict[str, Any]):
+        self.fact = fact
+        self.variables = {
+            "category": tk.StringVar(value=fact["category"]),
+            "key": tk.StringVar(value=fact["key"]),
+            "value": tk.StringVar(value=fact["value"]),
+            "valid_from": tk.StringVar(value=fact["valid_from"] or ""),
+            "valid_to": tk.StringVar(value=fact["valid_to"] or ""),
+            "visibility": tk.StringVar(value=fact["visibility"]),
+            "confidence": tk.StringVar(value=str(fact["confidence"])),
+            "correction_note": tk.StringVar(),
+        }
+        self.allow_overlap = tk.BooleanVar(value=False)
+        self.result: dict[str, Any] | None = None
+        super().__init__(parent, title=f"Fact #{fact['id']} alanlarını düzelt")
+
+    def body(self, master: tk.Misc):
+        ttk.Label(
+            master,
+            text=(
+                "Yalnızca değiştirdiğiniz alanlar audit kaydına yazılır. "
+                "Tarih alanını boş bırakmak tarihi temizler."
+            ),
+            foreground="#475569",
+            wraplength=500,
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+        labels = (
+            ("Kategori", "category"),
+            ("Anahtar", "key"),
+            ("Değer", "value"),
+            ("Başlangıç tarihi (YYYY-MM-DD)", "valid_from"),
+            ("Bitiş tarihi (YYYY-MM-DD)", "valid_to"),
+            ("Görünürlük", "visibility"),
+            ("Confidence (0.0-1.0)", "confidence"),
+            ("Düzeltme nedeni", "correction_note"),
+        )
+        first_entry = None
+        for row, (label, field_name) in enumerate(labels, start=1):
+            ttk.Label(master, text=label).grid(
+                row=row,
+                column=0,
+                sticky="w",
+                padx=(0, 10),
+                pady=4,
+            )
+            if field_name == "visibility":
+                widget = ttk.Combobox(
+                    master,
+                    textvariable=self.variables[field_name],
+                    values=VISIBILITIES,
+                    state="readonly",
+                )
+            else:
+                widget = ttk.Entry(
+                    master,
+                    textvariable=self.variables[field_name],
+                    width=48,
+                )
+            widget.grid(row=row, column=1, sticky="ew", pady=4)
+            if first_entry is None:
+                first_entry = widget
+        ttk.Checkbutton(
+            master,
+            text="Bu anahtar aynı dönemde birden çok değere sahip olabilir",
+            variable=self.allow_overlap,
+        ).grid(
+            row=len(labels) + 1,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(8, 0),
+        )
+        master.columnconfigure(1, weight=1)
+        return first_entry
+
+    def validate(self) -> bool:
+        note = self.variables["correction_note"].get().strip()
+        if not note:
+            messagebox.showerror(
+                "Eksik bilgi",
+                "Audit için düzeltme nedeni zorunludur.",
+                parent=self,
+            )
+            return False
+        try:
+            confidence = float(self.variables["confidence"].get())
+        except ValueError:
+            messagebox.showerror(
+                "Geçersiz confidence",
+                "Confidence 0.0 ile 1.0 arasında sayı olmalıdır.",
+                parent=self,
+            )
+            return False
+        if not 0.0 <= confidence <= 1.0:
+            messagebox.showerror(
+                "Geçersiz confidence",
+                "Confidence 0.0 ile 1.0 arasında olmalıdır.",
+                parent=self,
+            )
+            return False
+        return True
+
+    def apply(self) -> None:
+        self.result = {
+            "category": self.variables["category"].get(),
+            "key": self.variables["key"].get(),
+            "value": self.variables["value"].get(),
+            "valid_from": optional_text(self.variables["valid_from"].get()),
+            "valid_to": optional_text(self.variables["valid_to"].get()),
+            "visibility": self.variables["visibility"].get(),
+            "confidence": float(self.variables["confidence"].get()),
+            "correction_note": self.variables["correction_note"].get(),
+            "allow_overlap": self.allow_overlap.get(),
+        }
 
 
 class PersonalDatasetApp(tk.Tk):
@@ -277,14 +398,24 @@ class PersonalDatasetApp(tk.Tk):
         fact_actions.pack(fill="x", pady=(0, 6))
         ttk.Button(
             fact_actions,
-            text="Düzenle / yeni sürüm oluştur",
+            text="Alanları düzelt",
             command=self.edit_selected_fact,
         ).pack(side="left")
+        ttk.Button(
+            fact_actions,
+            text="Yeni sürüm oluştur",
+            command=self.supersede_selected_fact,
+        ).pack(side="left", padx=(6, 0))
         ttk.Button(
             fact_actions,
             text="Sil (audit kaydı korunur)",
             command=self.delete_selected_fact,
         ).pack(side="left", padx=6)
+        ttk.Button(
+            fact_actions,
+            text="Düzeltme geçmişi",
+            command=self.show_selected_fact_corrections,
+        ).pack(side="left")
         self.show_fact_history = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             fact_actions,
@@ -292,11 +423,6 @@ class PersonalDatasetApp(tk.Tk):
             variable=self.show_fact_history,
             command=self.refresh_facts,
         ).pack(side="right")
-        ttk.Label(
-            fact_actions,
-            text="Önce aşağıdaki tablodan bir bilgi seçin.",
-            foreground="#475569",
-        ).pack(side="right", padx=12)
         self.facts_tree = self._tree(
             self.people_tab,
             (
@@ -714,6 +840,36 @@ class PersonalDatasetApp(tk.Tk):
         try:
             fact_id = self._selected_id(self.facts_tree)
             fact = get_fact(fact_id)
+            if fact["status"] == "deleted":
+                raise ValueError("Deleted bir fact düzeltilemez.")
+        except Exception as error:
+            messagebox.showerror("Düzeltme yapılamadı", str(error), parent=self)
+            return
+
+        dialog = FactCorrectionDialog(self, fact)
+        if dialog.result is None:
+            return
+        if not messagebox.askyesno(
+            "Alan düzeltmesini onayla",
+            (
+                "Yalnızca gerçekten değişen alanlar güncellenecek. Fact ID, "
+                "source bağlantıları ve değiştirmediğiniz alanlar korunacak. "
+                "Eski/yeni değerler audit kaydına yazılsın mı?"
+            ),
+            parent=self,
+        ):
+            return
+        result = self._perform(
+            lambda: correct_fact(fact_id, **dialog.result),
+            "Bilgi alanları düzeltildi ve audit kaydı oluşturuldu.",
+        )
+        if result is not None:
+            self.show_fact_corrections(fact_id)
+
+    def supersede_selected_fact(self) -> None:
+        try:
+            fact_id = self._selected_id(self.facts_tree)
+            fact = get_fact(fact_id)
             if fact["valid_to"] is not None:
                 raise ValueError(
                     "Yalnızca açık uçlu güncel bir fact yeni sürümle "
@@ -834,6 +990,37 @@ class PersonalDatasetApp(tk.Tk):
                 source_id=source_id,
             ),
             "Bilgi düzenlendi; eski sürüm tarihçede korundu.",
+        )
+
+    def show_selected_fact_corrections(self) -> None:
+        try:
+            fact_id = self._selected_id(self.facts_tree)
+        except ValueError as error:
+            messagebox.showerror("Seçim gerekli", str(error), parent=self)
+            return
+        self.show_fact_corrections(fact_id)
+
+    def show_fact_corrections(self, fact_id: int) -> None:
+        try:
+            corrections = get_fact_corrections(fact_id)
+        except Exception as error:
+            messagebox.showerror(
+                "Düzeltme geçmişi alınamadı",
+                str(error),
+                parent=self,
+            )
+            return
+        window = tk.Toplevel(self)
+        window.title(f"Fact #{fact_id} düzeltme geçmişi")
+        window.geometry("760x460")
+        output = tk.Text(window, wrap="word", font=("Consolas", 9))
+        output.pack(fill="both", expand=True, padx=10, pady=10)
+        self._set_output(
+            output,
+            corrections if corrections else "Bu fact için düzeltme kaydı yok.",
+        )
+        ttk.Button(window, text="Kapat", command=window.destroy).pack(
+            pady=(0, 10)
         )
 
     def delete_selected_fact(self) -> None:

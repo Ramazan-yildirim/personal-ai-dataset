@@ -6,6 +6,7 @@ from pathlib import Path
 from src.database.fact_sources import (
     LinkSourceNotFoundError,
     get_sources_for_fact,
+    link_fact_source,
 )
 from src.database.facts import (
     AmbiguousFactError,
@@ -17,11 +18,13 @@ from src.database.facts import (
     PersonNotFoundError,
     add_fact,
     close_fact,
+    correct_fact,
     deprecate_fact,
     get_current_facts,
     get_current_fact,
     get_fact,
     get_fact_history,
+    get_fact_corrections,
     list_facts,
     soft_delete_fact,
     supersede_fact,
@@ -406,6 +409,134 @@ class FactsTestCase(unittest.TestCase):
             connection=self.connection,
         )
         self.assertEqual(audit_rows[0]["status"], "deleted")
+
+    def test_correct_fact_adds_and_changes_dates_only(self):
+        fact_id = add_fact(
+            self.person_id,
+            "profile",
+            "role",
+            "Synthetic Role",
+            visibility="private",
+            confidence=0.8,
+            connection=self.connection,
+        )
+        source = add_source(
+            "manual",
+            "Synthetic source",
+            connection=self.connection,
+        )
+        link_fact_source(
+            fact_id,
+            source["id"],
+            connection=self.connection,
+        )
+
+        first = correct_fact(
+            fact_id,
+            valid_from="2025-01-01",
+            correction_note="Missing date added",
+            connection=self.connection,
+        )
+        second = correct_fact(
+            fact_id,
+            valid_from="2025-02-01",
+            valid_to="2025-12-31",
+            correction_note="Date corrected",
+            connection=self.connection,
+        )
+
+        self.assertEqual(first["correction"]["changed_fields"], ["valid_from"])
+        self.assertEqual(second["fact"]["valid_from"], "2025-02-01")
+        self.assertEqual(second["fact"]["valid_to"], "2025-12-31")
+        self.assertEqual(second["fact"]["value"], "Synthetic Role")
+        self.assertEqual(second["fact"]["visibility"], "private")
+        self.assertEqual(second["fact"]["confidence"], 0.8)
+        linked = get_sources_for_fact(fact_id, connection=self.connection)
+        self.assertEqual([item["id"] for item in linked], [source["id"]])
+        corrections = get_fact_corrections(
+            fact_id,
+            connection=self.connection,
+        )
+        self.assertEqual(len(corrections), 2)
+        self.assertEqual(
+            corrections[1]["before_values"],
+            {"valid_from": "2025-01-01", "valid_to": None},
+        )
+
+    def test_correct_fact_can_clear_a_date(self):
+        fact_id = add_fact(
+            self.person_id,
+            "project",
+            "role",
+            "Synthetic Role",
+            valid_from="2025-01-01",
+            valid_to="2025-12-31",
+            connection=self.connection,
+        )
+
+        result = correct_fact(
+            fact_id,
+            valid_to=None,
+            correction_note="Incorrect end date removed",
+            connection=self.connection,
+        )
+
+        self.assertIsNone(result["fact"]["valid_to"])
+        self.assertEqual(
+            result["correction"]["after_values"],
+            {"valid_to": None},
+        )
+
+    def test_invalid_correction_rolls_back_fact_and_audit(self):
+        fact_id = add_fact(
+            self.person_id,
+            "project",
+            "role",
+            "Synthetic Role",
+            valid_from="2025-01-01",
+            connection=self.connection,
+        )
+
+        with self.assertRaises(FactValidationError):
+            correct_fact(
+                fact_id,
+                valid_from="2026-01-01",
+                valid_to="2025-01-01",
+                correction_note="Invalid correction",
+                connection=self.connection,
+            )
+
+        stored = get_fact(fact_id, connection=self.connection)
+        self.assertEqual(stored["valid_from"], "2025-01-01")
+        self.assertIsNone(stored["valid_to"])
+        self.assertEqual(
+            get_fact_corrections(fact_id, connection=self.connection),
+            [],
+        )
+
+    def test_correction_requires_change_and_note(self):
+        fact_id = add_fact(
+            self.person_id,
+            "profile",
+            "role",
+            "Synthetic Role",
+            connection=self.connection,
+        )
+
+        with self.assertRaises(FactValidationError):
+            correct_fact(
+                fact_id,
+                value="Synthetic Role",
+                correction_note="No change",
+                connection=self.connection,
+            )
+        with self.assertRaises(FactValidationError):
+            correct_fact(
+                fact_id,
+                value="Changed Role",
+                correction_note="",
+                connection=self.connection,
+            )
 
     def test_supersede_fact_closes_old_record_and_inherits_metadata(self):
         old_id = add_fact(

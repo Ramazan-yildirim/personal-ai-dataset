@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import date, timedelta
 from typing import Any
@@ -13,6 +14,7 @@ from src.database.persons import PersonNotFoundError as PersonServiceNotFoundErr
 
 ALLOWED_VISIBILITIES = {"public", "private", "internal"}
 ALLOWED_STATUSES = {"active", "deprecated", "deleted"}
+UNCHANGED = object()
 
 
 class FactError(Exception):
@@ -166,9 +168,9 @@ def _find_duplicate(
     visibility: str,
     status: str,
     confidence: float,
+    exclude_fact_id: int | None = None,
 ) -> sqlite3.Row | None:
-    return connection.execute(
-        """
+    query = """
         SELECT id
         FROM facts
         WHERE person_id = ?
@@ -180,20 +182,23 @@ def _find_duplicate(
           AND visibility = ?
           AND status = ?
           AND confidence = ?
-        LIMIT 1
-        """,
-        (
-            person_id,
-            category,
-            key,
-            value,
-            valid_from,
-            valid_to,
-            visibility,
-            status,
-            confidence,
-        ),
-    ).fetchone()
+    """
+    parameters: list[Any] = [
+        person_id,
+        category,
+        key,
+        value,
+        valid_from,
+        valid_to,
+        visibility,
+        status,
+        confidence,
+    ]
+    if exclude_fact_id is not None:
+        query += " AND id != ?"
+        parameters.append(exclude_fact_id)
+    query += " LIMIT 1"
+    return connection.execute(query, parameters).fetchone()
 
 
 def _find_active_overlap(
@@ -204,9 +209,9 @@ def _find_active_overlap(
     key: str,
     valid_from: str | None,
     valid_to: str | None,
+    exclude_fact_id: int | None = None,
 ) -> sqlite3.Row | None:
-    return connection.execute(
-        """
+    query = """
         SELECT id, value, valid_from, valid_to
         FROM facts
         WHERE person_id = ?
@@ -215,19 +220,21 @@ def _find_active_overlap(
           AND status = 'active'
           AND (valid_to IS NULL OR ? IS NULL OR valid_to >= ?)
           AND (? IS NULL OR valid_from IS NULL OR valid_from <= ?)
-        ORDER BY id
-        LIMIT 1
-        """,
-        (
-            person_id,
-            category,
-            key,
-            valid_from,
-            valid_from,
-            valid_to,
-            valid_to,
-        ),
-    ).fetchone()
+    """
+    parameters: list[Any] = [
+        person_id,
+        category,
+        key,
+        valid_from,
+        valid_from,
+        valid_to,
+        valid_to,
+    ]
+    if exclude_fact_id is not None:
+        query += " AND id != ?"
+        parameters.append(exclude_fact_id)
+    query += " ORDER BY id LIMIT 1"
+    return connection.execute(query, parameters).fetchone()
 
 
 def add_fact(
@@ -444,6 +451,226 @@ def list_facts(
         """
         rows = active_connection.execute(query, (person_id,)).fetchall()
         return [_row_to_dict(row) for row in rows]
+    finally:
+        if owns_connection:
+            active_connection.close()
+
+
+def correct_fact(
+    fact_id: int,
+    *,
+    category: Any = UNCHANGED,
+    key: Any = UNCHANGED,
+    value: Any = UNCHANGED,
+    valid_from: Any = UNCHANGED,
+    valid_to: Any = UNCHANGED,
+    visibility: Any = UNCHANGED,
+    confidence: Any = UNCHANGED,
+    correction_note: str,
+    allow_overlap: bool = False,
+    connection: sqlite3.Connection | None = None,
+) -> dict[str, Any]:
+    """Correct selected fields in place and write an immutable audit record."""
+
+    _validate_fact_id(fact_id)
+    if not isinstance(correction_note, str) or not correction_note.strip():
+        raise FactValidationError("Düzeltme için correction_note zorunludur.")
+    if not isinstance(allow_overlap, bool):
+        raise FactValidationError("allow_overlap boolean olmalıdır.")
+
+    active_connection, owns_connection = _connection_or_default(connection)
+    savepoint_name = "correct_fact"
+    try:
+        stored = _get_fact_row(active_connection, fact_id)
+        if stored["status"] == "deleted":
+            raise FactStateError("Deleted bir fact düzeltilemez.")
+
+        proposed = {
+            "category": stored["category"] if category is UNCHANGED else category,
+            "key": stored["key"] if key is UNCHANGED else key,
+            "value": stored["value"] if value is UNCHANGED else value,
+            "valid_from": (
+                stored["valid_from"] if valid_from is UNCHANGED else valid_from
+            ),
+            "valid_to": stored["valid_to"] if valid_to is UNCHANGED else valid_to,
+            "visibility": (
+                stored["visibility"] if visibility is UNCHANGED else visibility
+            ),
+            "confidence": (
+                stored["confidence"] if confidence is UNCHANGED else confidence
+            ),
+        }
+        (
+            normalized_category,
+            normalized_key,
+            normalized_value,
+            normalized_from,
+            normalized_to,
+            normalized_confidence,
+        ) = _validate_fact_input(
+            stored["person_id"],
+            proposed["category"],
+            proposed["key"],
+            proposed["value"],
+            proposed["valid_from"],
+            proposed["valid_to"],
+            proposed["visibility"],
+            stored["status"],
+            proposed["confidence"],
+        )
+        normalized = {
+            "category": normalized_category,
+            "key": normalized_key,
+            "value": normalized_value,
+            "valid_from": normalized_from,
+            "valid_to": normalized_to,
+            "visibility": proposed["visibility"],
+            "confidence": normalized_confidence,
+        }
+
+        duplicate = _find_duplicate(
+            active_connection,
+            person_id=stored["person_id"],
+            status=stored["status"],
+            exclude_fact_id=fact_id,
+            **normalized,
+        )
+        if duplicate is not None:
+            raise DuplicateFactError(
+                f"Düzeltme başka bir fact ile aynı sonucu veriyor "
+                f"(id={duplicate['id']})."
+            )
+        if stored["status"] == "active" and not allow_overlap:
+            overlap = _find_active_overlap(
+                active_connection,
+                person_id=stored["person_id"],
+                category=normalized_category,
+                key=normalized_key,
+                valid_from=normalized_from,
+                valid_to=normalized_to,
+                exclude_fact_id=fact_id,
+            )
+            if overlap is not None:
+                raise OverlappingFactError(
+                    "Düzeltme başka bir aktif fact dönemiyle çakışıyor "
+                    f"(fact_id={overlap['id']})."
+                )
+
+        changed_fields = [
+            field_name
+            for field_name, new_value in normalized.items()
+            if stored[field_name] != new_value
+        ]
+        if not changed_fields:
+            raise FactValidationError("Düzeltilecek bir alan değişmedi.")
+        before_values = {
+            field_name: stored[field_name] for field_name in changed_fields
+        }
+        after_values = {
+            field_name: normalized[field_name] for field_name in changed_fields
+        }
+
+        active_connection.execute(f"SAVEPOINT {savepoint_name}")
+        try:
+            active_connection.execute(
+                """
+                UPDATE facts
+                SET category = ?,
+                    key = ?,
+                    value = ?,
+                    valid_from = ?,
+                    valid_to = ?,
+                    visibility = ?,
+                    confidence = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (
+                    normalized_category,
+                    normalized_key,
+                    normalized_value,
+                    normalized_from,
+                    normalized_to,
+                    normalized["visibility"],
+                    normalized_confidence,
+                    fact_id,
+                ),
+            )
+            cursor = active_connection.execute(
+                """
+                INSERT INTO fact_corrections (
+                    fact_id,
+                    changed_fields,
+                    before_values,
+                    after_values,
+                    correction_note
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    fact_id,
+                    json.dumps(changed_fields, ensure_ascii=False),
+                    json.dumps(before_values, ensure_ascii=False, sort_keys=True),
+                    json.dumps(after_values, ensure_ascii=False, sort_keys=True),
+                    correction_note.strip(),
+                ),
+            )
+        except Exception:
+            active_connection.execute(
+                f"ROLLBACK TO SAVEPOINT {savepoint_name}"
+            )
+            active_connection.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+            raise
+        else:
+            active_connection.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+            if owns_connection:
+                active_connection.commit()
+
+        correction = active_connection.execute(
+            "SELECT * FROM fact_corrections WHERE id = ?",
+            (cursor.lastrowid,),
+        ).fetchone()
+        return {
+            "fact": _row_to_dict(_get_fact_row(active_connection, fact_id)),
+            "correction": _correction_to_dict(correction),
+        }
+    except Exception:
+        if owns_connection:
+            active_connection.rollback()
+        raise
+    finally:
+        if owns_connection:
+            active_connection.close()
+
+
+def _correction_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    correction = _row_to_dict(row)
+    for field_name in ("changed_fields", "before_values", "after_values"):
+        correction[field_name] = json.loads(correction[field_name])
+    return correction
+
+
+def get_fact_corrections(
+    fact_id: int,
+    *,
+    connection: sqlite3.Connection | None = None,
+) -> list[dict[str, Any]]:
+    """Return correction audit records for one fact."""
+
+    _validate_fact_id(fact_id)
+    active_connection, owns_connection = _connection_or_default(connection)
+    try:
+        _get_fact_row(active_connection, fact_id)
+        rows = active_connection.execute(
+            """
+            SELECT *
+            FROM fact_corrections
+            WHERE fact_id = ?
+            ORDER BY id
+            """,
+            (fact_id,),
+        ).fetchall()
+        return [_correction_to_dict(row) for row in rows]
     finally:
         if owns_connection:
             active_connection.close()
