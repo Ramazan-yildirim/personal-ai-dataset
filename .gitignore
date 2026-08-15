@@ -41,6 +41,7 @@ logs/*
 __pycache__/
 *.py[cod]
 .venv/
+.venv-personal-ai-dataset/
 venv/
 .pytest_cache/
 .coverage

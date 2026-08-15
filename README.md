@@ -80,7 +80,15 @@ Repository'yi klonlayın ve proje kökünde çalışın:
 ```powershell
 git clone https://github.com/Ramazan-yildirim/personal-ai-dataset.git
 cd personal-ai-dataset
+python -m venv .venv-personal-ai-dataset
+.\.venv-personal-ai-dataset\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
+```
+
+Sonraki PowerShell oturumlarında proje ortamını yeniden etkinleştirmek için:
+
+```powershell
+.\.venv-personal-ai-dataset\Scripts\Activate.ps1
 ```
 
 Local veritabanını oluşturun:
