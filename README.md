@@ -94,6 +94,28 @@ Bu komutlar bekleyen numaralı migration'ları sırayla uygular. Tekrar
 çalıştırılmaları güvenlidir; uygulanmış migration dosyası sonradan
 değiştirilirse checksum kontrolü işlemi durdurur.
 
+## Görsel kontrol merkezi
+
+Tüm günlük işlemleri tek pencereden yönetmek için:
+
+```powershell
+python scripts/personal_ai_ui.py
+```
+
+Uygulama veritabanlarını idempotent biçimde hazırlar ve şu sekmeleri sunar:
+
+- **Kişiler ve Manuel Bilgi:** kişi oluşturma, dosyalı/dosyasız kaynağa bağlı
+  candidate girişi ve onaylanmış fact görünümü
+- **Belgeler:** belge ingestion, extraction önizlemesi, manuel source ve
+  structured candidate bundle import
+- **Onay Merkezi:** pending/approved/rejected candidate listeleme, validate,
+  approve ve gerekçeli reject
+- **Export:** public-default Transformer, fine-tuning ve RAG çıktıları
+
+Arayüz yalnızca tek giriş noktasıdır; doğrulanan `src/` servislerini çağırır.
+Core'a doğrudan fact ekleme düğmesi yoktur. Yeni bilgiler önce candidate olur
+ve yalnızca açık onaydan sonra core DB'ye geçer.
+
 Kişiyi local veritabanına ekleyin. İsim interaktif olarak istenir ve kaynak
 koduna yazılmaz:
 
