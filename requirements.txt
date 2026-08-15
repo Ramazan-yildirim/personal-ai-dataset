@@ -1,1 +1,1 @@
-# Runtime dependencies: Python standard library only.
+pypdf>=5.0.0

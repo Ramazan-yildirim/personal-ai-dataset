@@ -1,0 +1,26 @@
+{
+  "person_id": 1,
+  "source_id": 1,
+  "candidates": [
+    {
+      "category": "education",
+      "key": "department",
+      "value": "Example Department",
+      "valid_from": "2024-09-01",
+      "valid_to": null,
+      "visibility": "public",
+      "confidence": 1.0,
+      "allow_overlap": false
+    },
+    {
+      "category": "skill",
+      "key": "programming_language",
+      "value": "Example Language",
+      "valid_from": null,
+      "valid_to": null,
+      "visibility": "public",
+      "confidence": 0.9,
+      "allow_overlap": true
+    }
+  ]
+}
