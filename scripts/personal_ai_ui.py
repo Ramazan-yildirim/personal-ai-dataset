@@ -27,10 +27,8 @@ from src.database.facts import (
 )
 from src.database.sources import add_source, deactivate_source, list_sources
 from src.database.staging_connection import initialize_staging_database
-from src.exporters.common import EXPORT_ROOT, load_export_facts
-from src.exporters.finetuning import export_finetuning
-from src.exporters.rag import export_rag
-from src.exporters.transformer import export_transformer
+from src.exporters.common import load_export_facts
+from src.exporters.datasets import export_all_datasets
 from src.extraction.candidate_import import import_candidate_bundle
 from src.extraction.documents import extract_source
 from src.ingestion.documents import ingest_document
@@ -62,18 +60,6 @@ def choice_id(value: str, *, allow_none: bool = False) -> int | None:
     if not raw_id.isdigit() or int(raw_id) <= 0:
         raise ValueError("Lütfen listeden geçerli bir kayıt seçin.")
     return int(raw_id)
-
-
-def selected_visibilities(
-    include_private: bool,
-    include_internal: bool,
-) -> tuple[str, ...]:
-    values = ["public"]
-    if include_private:
-        values.append("private")
-    if include_internal:
-        values.append("internal")
-    return tuple(values)
 
 
 def json_text(value: Any) -> str:
@@ -582,68 +568,26 @@ class PersonalDatasetApp(tk.Tk):
         ).pack(fill="x", pady=2)
 
     def _build_export(self) -> None:
-        form = ttk.LabelFrame(self.export_tab, text="Ayarlar", padding=10)
-        form.pack(fill="x")
-        self.e_private = tk.BooleanVar(value=False)
-        self.e_internal = tk.BooleanVar(value=False)
-        self.e_output = tk.StringVar()
-        self.e_supplemental = tk.StringVar()
-        self.e_max = tk.StringVar(value="800")
-        self.e_overlap = tk.StringVar(value="100")
-        ttk.Checkbutton(
-            form, text="private dahil", variable=self.e_private
-        ).grid(row=0, column=0, sticky="w")
-        ttk.Checkbutton(
-            form, text="internal dahil", variable=self.e_internal
-        ).grid(row=0, column=1, sticky="w")
-        ttk.Label(form, text="public her zaman dahil").grid(
-            row=0, column=2, sticky="w"
-        )
-        ttk.Label(form, text="Output klasörü (opsiyonel)").grid(
-            row=1, column=0, sticky="w", pady=(8, 0)
-        )
-        ttk.Entry(form, textvariable=self.e_output).grid(
-            row=2, column=0, columnspan=2, sticky="ew", padx=(0, 5)
-        )
-        ttk.Button(form, text="Seç", command=self.choose_export_dir).grid(
-            row=2, column=2, sticky="w"
-        )
-        ttk.Label(form, text="Supplemental klasörü").grid(
-            row=3, column=0, sticky="w", pady=(8, 0)
-        )
-        ttk.Entry(form, textvariable=self.e_supplemental).grid(
-            row=4, column=0, columnspan=2, sticky="ew", padx=(0, 5)
-        )
-        ttk.Button(form, text="Seç", command=self.choose_supplemental).grid(
-            row=4, column=2, sticky="w"
-        )
-        ttk.Label(form, text="RAG max / overlap").grid(
-            row=5, column=0, sticky="w", pady=(8, 0)
-        )
-        ttk.Entry(form, textvariable=self.e_max, width=10).grid(
-            row=6, column=0, sticky="w"
-        )
-        ttk.Entry(form, textvariable=self.e_overlap, width=10).grid(
-            row=6, column=1, sticky="w"
-        )
-        form.columnconfigure(0, weight=1)
-        form.columnconfigure(1, weight=1)
-        buttons = ttk.Frame(self.export_tab)
-        buttons.pack(fill="x", pady=8)
-        for name, title in (
-            ("transformer", "Transformer"),
-            ("finetuning", "Fine-tuning"),
-            ("rag", "RAG"),
-            ("all", "Tümünü üret"),
-        ):
-            ttk.Button(
-                buttons,
-                text=title,
-                command=lambda value=name: self.export(value),
-            ).pack(side="left", padx=(0, 5))
         ttk.Label(
             self.export_tab,
-            text="Private/internal veriler yalnızca açıkça seçilirse export edilir.",
+            text=(
+                "Onaylanmış güncel bilgiler Transformer, fine-tuning ve RAG "
+                "dosyalarına birlikte uygulanır."
+            ),
+        ).pack(anchor="w")
+        ttk.Label(
+            self.export_tab,
+            text="Hedef: data/exports/",
+            foreground="#475569",
+        ).pack(anchor="w", pady=(2, 8))
+        ttk.Button(
+            self.export_tab,
+            text="Export",
+            command=self.export,
+        ).pack(anchor="w", pady=(0, 8))
+        ttk.Label(
+            self.export_tab,
+            text="Güvenlik gereği yalnızca public ve active bilgiler export edilir.",
             foreground="#9a3412",
         ).pack(anchor="w")
         self.export_output = tk.Text(
@@ -1189,51 +1133,9 @@ class PersonalDatasetApp(tk.Tk):
                 "Candidate reddedildi; audit kaydı korundu.",
             )
 
-    def choose_export_dir(self) -> None:
-        path = filedialog.askdirectory(parent=self, title="Export klasörü")
-        if path:
-            self.e_output.set(path)
-
-    def choose_supplemental(self) -> None:
-        path = filedialog.askdirectory(parent=self, title="Supplemental klasörü")
-        if path:
-            self.e_supplemental.set(path)
-
-    def export(self, target_name: str) -> None:
-        def action():
-            visibilities = selected_visibilities(
-                self.e_private.get(),
-                self.e_internal.get(),
-            )
-            custom_root = optional_text(self.e_output.get())
-            output_root = (
-                Path(custom_root).resolve()
-                if custom_root is not None
-                else EXPORT_ROOT
-            )
-            result = {}
-            if target_name in {"transformer", "all"}:
-                result["transformer"] = export_transformer(
-                    output_dir=output_root / "transformer",
-                    supplemental_dir=optional_text(self.e_supplemental.get()),
-                    visibilities=visibilities,
-                )
-            if target_name in {"finetuning", "all"}:
-                result["finetuning"] = export_finetuning(
-                    output_dir=output_root / "finetuning",
-                    visibilities=visibilities,
-                )
-            if target_name in {"rag", "all"}:
-                result["rag"] = export_rag(
-                    output_dir=output_root / "rag",
-                    visibilities=visibilities,
-                    max_chars=int(self.e_max.get()),
-                    overlap_chars=int(self.e_overlap.get()),
-                )
-            return result
-
+    def export(self) -> None:
         result = self._perform(
-            action,
+            export_all_datasets,
             "Dataset exportları üretildi.",
             refresh=False,
         )

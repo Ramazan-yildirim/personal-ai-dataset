@@ -5,7 +5,6 @@ from scripts.personal_ai_ui import (
     NO_SOURCE,
     choice_id,
     optional_text,
-    selected_visibilities,
 )
 
 
@@ -19,17 +18,6 @@ class UIHelpersTestCase(unittest.TestCase):
         self.assertIsNone(choice_id(NO_SOURCE, allow_none=True))
         with self.assertRaises(ValueError):
             choice_id("invalid")
-
-    def test_private_visibility_requires_opt_in(self):
-        self.assertEqual(
-            selected_visibilities(False, False),
-            ("public",),
-        )
-        self.assertEqual(
-            selected_visibilities(True, True),
-            ("public", "private", "internal"),
-        )
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -119,7 +119,8 @@ Uygulama veritabanlarını idempotent biçimde hazırlar ve şu sekmeleri sunar:
   structured candidate bundle import
 - **Onay Merkezi:** pending/approved/rejected candidate listeleme, validate,
   approve ve gerekçeli reject
-- **Export:** public-default Transformer, fine-tuning ve RAG çıktıları
+- **Export:** tek düğmeyle `data/exports/` altında güncellenen public-default
+  Transformer, fine-tuning ve RAG çıktıları
 
 Arayüz yalnızca tek giriş noktasıdır; doğrulanan `src/` servislerini çağırır.
 Core'a doğrudan fact ekleme düğmesi yoktur. Yeni bilgiler önce candidate olur
@@ -355,6 +356,10 @@ Import edilen candidate'lar yine validate ve manuel review aşamasından geçer.
 
 Tüm exporter'lar varsayılan olarak yalnızca `public` ve `active` fact'leri
 kullanır. Private veya internal bilgi ancak açık komut bayrağıyla eklenir.
+Arayüzdeki **Export** düğmesi klasör veya format seçimi istemeden üç formatı da
+`data/exports/` altında yeniden üretir. Böylece son onay, düzeltme ve silmeler
+mevcut export dosyalarına uygulanır; eski dosya içeriğinin üzerine ekleme
+yapılmaz.
 
 Transformer corpus:
 
